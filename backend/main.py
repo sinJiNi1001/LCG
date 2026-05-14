@@ -107,7 +107,20 @@ async def background_lead_generator(job_id: str, request: LeadGenerationRequest)
                 JOBS_DB[job_id]["status"] = f"enriching_{clean_company_name}"
                 
                 target_roles = request.sales_inputs.get("Target Roles", ["CTO", "CEO"])
-                real_contacts = find_linkedin_contacts(clean_company_name, target_roles)
+                
+                # 1. ADDED AWAIT: Because find_linkedin_contacts now uses AsyncGroq
+                raw_contacts = await find_linkedin_contacts(clean_company_name, target_roles, request.location)
+                
+                # 2. THE PYTHON BOUNCER: Strictly enforce the roles so Android Devs don't become Sales Execs
+                real_contacts = []
+                for contact in raw_contacts:
+                    actual_title = contact.get("designation", "").lower()
+                    
+                    # Ensure it's not empty, and check if ANY of the target roles exist inside the actual title
+                    if actual_title and any(role.lower() in actual_title for role in target_roles):
+                        real_contacts.append(contact)
+                    else:
+                        print(f"🚫 Python Bouncer Dropped {contact.get('name', 'Unknown')} - Title '{actual_title}' does not match target roles.")
                 
                 final_new_contacts = []
                 

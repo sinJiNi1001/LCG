@@ -13,14 +13,17 @@ load_dotenv()
 
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 
-
 EXCLUDED_DOMAINS = {
-    # 1. Enterprise Anti-Bot Fortresses
+    # 1. Enterprise Anti-Bot Fortresses & Job Boards
     "glassdoor", "g2", "indeed", "naukri", "yelp", 
     "crunchbase", "zoominfo", "apollo", "trustpilot",
     
-    # 2. Hard Login Walls (Removed LinkedIn from here)
-    "facebook", "twitter", "instagram", "youtube"
+    # 2. Hard Login Walls & Social Media
+    "facebook", "twitter", "instagram", "youtube", "x.com",
+    
+    # 3. Aggregators, Directories, and Blogs (The "Not a real company" list)
+    "justdial", "indiamart", "ambitionbox", "clutch", "medium",
+     "goodfirms", "startupindia"
 }
 
 def get_base_domain(url: str) -> str:
@@ -40,14 +43,17 @@ def search_companies_via_serpapi(industry: str, location: str, num_results: int 
     if not SERPAPI_API_KEY:
         raise ValueError("CRITICAL: SERPAPI_API_KEY is missing from your .env file.")
 
-    query = f'"{industry}" company in {location} -jobs -glassdoor'
+    # 👇 THE NEGATIVE SEO QUERY 👇
+    # Forces Google to skip directories so your top 15 results are actual corporate websites
+    query = f'"{industry}" companies OR business in "{location}" -jobs -site:linkedin.com -site:glassdoor.com -site:crunchbase.com -site:zoominfo.com -site:justdial.com -site:indiamart.com -site:ambitionbox.com -site:clutch.co'
+    
     print(f"🔍 Searching Google for: '{query}'...")
 
     params = {
         "engine": "google",
         "q": query,
         "api_key": SERPAPI_API_KEY,
-        "num": num_results,
+        "num": num_results + 5, # Ask for a few extra just in case some are filtered out
         "gl": "in",
     }
 
@@ -68,6 +74,7 @@ def search_companies_via_serpapi(industry: str, location: str, num_results: int 
 
             domain = get_base_domain(link)
 
+            # 👇 THE DOMAIN BOUNCER 👇
             if domain not in seen_domains and is_valid_company_domain(domain):
                 seen_domains.add(domain)
                 companies.append({
@@ -75,6 +82,9 @@ def search_companies_via_serpapi(industry: str, location: str, num_results: int 
                     "url": link,
                     "domain": domain
                 })
+
+            if len(companies) >= num_results:
+                break
 
         print(f"✅ Found {len(companies)} direct company websites.")
         return companies
@@ -108,6 +118,8 @@ async def _playwright_scrape(url: str) -> str | None:
         except Exception as e:
             print(f"⚠️ Failed to scrape {url}: {e}")
             return None
+        finally:
+            await browser.close() # Good practice to explicitly close the browser
         
 
 def _run_playwright_in_thread(url: str) -> str | None:
