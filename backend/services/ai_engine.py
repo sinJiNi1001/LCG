@@ -13,7 +13,7 @@ def load_prompt(filename: str) -> str:
     with open(prompt_path, 'r', encoding='utf-8') as file:
         return file.read()
 
-# 2. UPDATE COMPANY ANALYZER
+# 2. COMPANY ANALYZER
 async def analyze_company_with_ai(company_name, company_url, website_text, sales_inputs, target_location):
     try:
         clean_text = website_text[:8000] 
@@ -40,12 +40,16 @@ async def analyze_company_with_ai(company_name, company_url, website_text, sales
         print(f"⚠️ Groq Analysis Failed for {company_name}: {e}")
         return None
 
-# 3. UPDATE LINKEDIN EXTRACTOR (If it's in this file)
-async def extract_linkedin_contact(linkedin_snippet_text, target_roles):
+# 3. LINKEDIN EXTRACTOR 
+async def extract_linkedin_contact(linkedin_snippet_text, target_roles, company_name, target_location):
     try:
         raw_prompt = load_prompt('linkedin_extractor.txt')
+        
+        # Inject all validation variables into the prompt
         system_prompt = raw_prompt.replace("[TARGET_ROLES]", json.dumps(target_roles)) \
-                                  .replace("[LINKEDIN_SNIPPET]", linkedin_snippet_text)
+                                  .replace("[LINKEDIN_SNIPPET]", linkedin_snippet_text) \
+                                  .replace("[COMPANY_NAME]", company_name) \
+                                  .replace("[TARGET_LOCATION]", target_location)
 
         response = await groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",

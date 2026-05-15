@@ -4,7 +4,6 @@ import uuid
 import io
 import csv
 from sqlalchemy.orm import joinedload
-
 from urllib.parse import urlparse
 
 # CRITICAL FIX FOR WINDOWS PLAYWRIGHT + FASTAPI
@@ -16,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-# Import our database setup and relational models
+# Import our database setup and relational models (PostgreSQL)
 from database import SessionLocal, Company, Contact, SearchHistory
 
 # Import our individual engine services
@@ -52,13 +51,39 @@ class ContactUpdate(BaseModel):
     notes: str | None = None
 
 # ==========================================
-# THE BACKGROUND ENGINE (with PostgreSQL)
+# THE BACKGROUND ENGINE (PostgreSQL)
 # ==========================================
 async def background_lead_generator(job_id: str, request: LeadGenerationRequest):
     db = SessionLocal()
     
     try:
-        requested_leads = int(request.sales_inputs.get("Number of Leads Required", 3))
+        # ==========================================
+        # 1. THE STRICT COMPULSORY ROLE CHECK
+        # ==========================================
+        raw_target_roles = (
+            request.sales_inputs.get("Target Roles") or 
+            request.sales_inputs.get("target_roles") or 
+            request.sales_inputs.get("targetRoles") or 
+            request.sales_inputs.get("TargetRoles")
+        )
+        
+        # If the role is missing or completely empty, abort the job immediately
+        if not raw_target_roles or str(raw_target_roles).strip() == "":
+            JOBS_DB[job_id]["status"] = "failed"
+            JOBS_DB[job_id]["error"] = "CRITICAL: 'Target Roles' is a compulsory field. Please enter a role to search for."
+            print(f"❌ Job {job_id} aborted: Target Roles missing from frontend.")
+            return
+
+        # Format the roles cleanly into a list
+        if isinstance(raw_target_roles, str):
+            target_roles = [role.strip() for role in raw_target_roles.split(",")]
+        else:
+            target_roles = raw_target_roles
+
+        print(f"🎯 AI IS INSTRUCTED TO LOOK ONLY FOR: {target_roles}")
+
+        # 👇 Treat the frontend volume input as the "Company Quota"
+        requested_companies = int(request.sales_inputs.get("Number of Leads Required", 3))
         JOBS_DB[job_id]["status"] = "scraping_google"
         
         # Fetch 15 results so we have backups if the AI rejects some
@@ -73,8 +98,9 @@ async def background_lead_generator(job_id: str, request: LeadGenerationRequest)
         analyzed_leads = []
         
         for company in companies:
-            if len(analyzed_leads) >= requested_leads:
-                print(f"\n🎯 Target of {requested_leads} valid leads reached! Stopping engine.")
+            # 👇 THE QUOTA CHECK: Stop when we have enough validated COMPANIES 👇
+            if len(analyzed_leads) >= requested_companies:
+                print(f"\n🎯 Target of {requested_companies} valid companies reached! Stopping engine.")
                 break
                 
             # STRICT HOMEPAGE EXTRACTOR: Strip away deep links and sub-pages
@@ -106,21 +132,29 @@ async def background_lead_generator(job_id: str, request: LeadGenerationRequest)
                 clean_company_name = analysis.get("name", company["name"])
                 JOBS_DB[job_id]["status"] = f"enriching_{clean_company_name}"
                 
-                target_roles = request.sales_inputs.get("Target Roles", ["CTO", "CEO"])
+                if analysis and analysis.get("lead_score", 0) >= 50:
+                    clean_company_name = analysis.get("name") 
                 
-                # 1. ADDED AWAIT: Because find_linkedin_contacts now uses AsyncGroq
+                # If the AI somehow failed to return a name, fall back to the domain, NOT the messy title
+                if not clean_company_name or clean_company_name == "":
+                    clean_company_name = clean_root_domain.split('.')[0].capitalize()
+                
+                print(f"📦 RAW FRONTEND DATA: {request.sales_inputs}")
+                
+                # Directly call the LinkedIn scraper
                 raw_contacts = await find_linkedin_contacts(clean_company_name, target_roles, request.location)
                 
-                # 2. THE PYTHON BOUNCER: Strictly enforce the roles so Android Devs don't become Sales Execs
+                # THE SEMANTIC AI BOUNCER 
                 real_contacts = []
                 for contact in raw_contacts:
-                    actual_title = contact.get("designation", "").lower()
-                    
-                    # Ensure it's not empty, and check if ANY of the target roles exist inside the actual title
-                    if actual_title and any(role.lower() in actual_title for role in target_roles):
+                    if contact.get("is_match") is True:
                         real_contacts.append(contact)
                     else:
-                        print(f"🚫 Python Bouncer Dropped {contact.get('name', 'Unknown')} - Title '{actual_title}' does not match target roles.")
+                        print(f"🚫 AI Bouncer Dropped {contact.get('name', 'Unknown')} - Title '{contact.get('designation')}' not a semantic match.")
+                
+                # 👇 THE SPAM FILTER: Cap the contacts at 3 per company 👇
+                # This ensures we don't flood the CRM with 10 executives from one place.
+                real_contacts = real_contacts[:3]
                 
                 final_new_contacts = []
                 
@@ -176,12 +210,15 @@ async def background_lead_generator(job_id: str, request: LeadGenerationRequest)
                 analysis["domain"] = clean_root_domain 
                 analysis["top_contacts"] = final_new_contacts 
                 
+                # 👇 THE BLANK COMPANY GUARD 👇
+                # We only count this company against the quota if we successfully saved contacts
                 if len(final_new_contacts) > 0:
                     analyzed_leads.append(analysis)
+                    print(f"✅ Saved Company {len(analyzed_leads)}/{requested_companies}: {clean_company_name} ({len(final_new_contacts)} contacts)")
         
         JOBS_DB[job_id]["status"] = "completed"
         JOBS_DB[job_id]["results"] = analyzed_leads
-        print(f"✅ Job {job_id} Complete! Saved {len(analyzed_leads)} leads.")            
+        print(f"🎉 Job {job_id} Complete! Pipeline successfully extracted data for {len(analyzed_leads)} companies.")            
     except Exception as e:
         db.rollback() 
         JOBS_DB[job_id]["status"] = "failed"
@@ -270,10 +307,7 @@ async def get_crm_history():
                 "name": comp.name,
                 "domain": comp.domain,
                 "industry": comp.industry,
-                
-                # FIX: Added the location field so the frontend doesn't say "Unknown"
                 "location": comp.location, 
-                
                 "lead_score": comp.lead_score,
                 "reason": comp.reason,
                 "top_contacts": [

@@ -1,4 +1,3 @@
-# services/scraper.py
 import os
 import sys
 import asyncio
@@ -19,12 +18,14 @@ EXCLUDED_DOMAINS = {
     "crunchbase", "zoominfo", "apollo", "trustpilot",
     
     # 2. Hard Login Walls & Social Media
-    "facebook", "twitter", "instagram", "youtube", "x.com",
+    "facebook", "twitter", "instagram", "youtube", "x.com", "linkedin",
     
     # 3. Aggregators, Directories, and Blogs (The "Not a real company" list)
     "justdial", "indiamart", "ambitionbox", "clutch", "medium",
-     "goodfirms", "startupindia"
+    "goodfirms", "startupindia", "sulekha", "tradeindia", "indiafilings"
 }
+
+
 
 def get_base_domain(url: str) -> str:
     try:
@@ -33,19 +34,38 @@ def get_base_domain(url: str) -> str:
     except Exception:
         return url.lower()
 
-def is_valid_company_domain(domain: str) -> bool:
+# 👇 1. THE ANTI-LISTICLE & ANTI-CRASH FILTER 👇
+def is_valid_company_url(domain: str, url: str, title: str) -> bool:
+    # Check domain blacklist
     for excluded in EXCLUDED_DOMAINS:
         if excluded in domain:
             return False
+            
+    url_lower = url.lower()
+    title_lower = title.lower()
+    
+    # 👇 THE CRITICAL FIX: Block files before Playwright clicks them 👇
+    # Using endswith() or ? checks avoids accidentally blocking valid URLs like /about-pdf-tools/
+    bad_extensions = [".pdf", ".xlsx", ".xls", ".doc", ".docx", ".csv", ".zip", ".png", ".jpg", ".jpeg", ".ppt", ".pptx"]
+    if any(url_lower.endswith(ext) or f"{ext}?" in url_lower for ext in bad_extensions):
+        print(f"🛑 Skipping file-link: {url}")
+        return False
+        
+    # Check for obvious blog/listicle patterns in the URL or Title
+    spam_patterns = ["top-", "best-", "list-", "top 10", "top 15", "top 20", "directory", "companies-in"]
+    if any(spam in url_lower or spam in title_lower for spam in spam_patterns):
+        return False
+        
     return True
 
-def search_companies_via_serpapi(industry: str, location: str, num_results: int = 15) -> list:
+def search_companies_via_serpapi(industry: str, location: str, num_results: int = 30) -> list:
     if not SERPAPI_API_KEY:
         raise ValueError("CRITICAL: SERPAPI_API_KEY is missing from your .env file.")
 
-    # 👇 THE NEGATIVE SEO QUERY 👇
-    # Forces Google to skip directories so your top 15 results are actual corporate websites
-    query = f'"{industry}" companies OR business in "{location}" -jobs -site:linkedin.com -site:glassdoor.com -site:crunchbase.com -site:zoominfo.com -site:justdial.com -site:indiamart.com -site:ambitionbox.com -site:clutch.co'
+    # 👇 2. THE NEW GOOGLE DORK 👇 
+    # Notice we added -top -best -list -directory to natively block blogs!
+    query = f'"{industry}" companies OR business in "{location}" -jobs -top -best -list -directory -site:linkedin.com -site:glassdoor.com -site:crunchbase.com -site:zoominfo.com -site:justdial.com -site:indiamart.com -site:ambitionbox.com -site:clutch.co -course -academy -education -dictionary'
+    
     
     print(f"🔍 Searching Google for: '{query}'...")
 
@@ -53,9 +73,18 @@ def search_companies_via_serpapi(industry: str, location: str, num_results: int 
         "engine": "google",
         "q": query,
         "api_key": SERPAPI_API_KEY,
-        "num": num_results + 5, # Ask for a few extra just in case some are filtered out
+        "num": num_results + 20, # Ask for extra so we have plenty of backups
         "gl": "in",
     }
+    
+    forbidden_domains = [
+        "wikipedia.org", "investopedia.com", "britannica.com", 
+        "dictionary.com", "forbes.com", "bloomberg.com", 
+        "justdial.com", "indiamart.com", "glassdoor.com",
+        "screener.in", "ambitionbox.com", "clutch.co",
+        "khanacademy.org", "coursera.org", "udemy.com", 
+        "merriam-webster.com" # Also add dictionaries!
+    ]
 
     try:
         search = GoogleSearch(params)
@@ -72,10 +101,17 @@ def search_companies_via_serpapi(industry: str, location: str, num_results: int 
             if not link or "google.com" in link:
                 continue
 
+            link_lower = link.lower()
+            if any(domain in link_lower for domain in forbidden_domains):
+                continue
+
+            if ".edu/" in link_lower or link_lower.endswith(".edu"):
+                continue
+
             domain = get_base_domain(link)
 
-            # 👇 THE DOMAIN BOUNCER 👇
-            if domain not in seen_domains and is_valid_company_domain(domain):
+            # 👇 3. PASS THE URL AND TITLE TO THE NEW FILTER 👇
+            if domain not in seen_domains and is_valid_company_url(domain, link, title):
                 seen_domains.add(domain)
                 companies.append({
                     "name": title.split("-")[0].split("|")[0].strip(),
@@ -105,7 +141,7 @@ async def _playwright_scrape(url: str) -> str | None:
         page = await context.new_page()
         try:
             # Tell Playwright to wait until the basic HTML is fully loaded
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             
             # Give the page a 2-second "breather" to finish any sneaky JavaScript redirects
             await page.wait_for_timeout(2000) 

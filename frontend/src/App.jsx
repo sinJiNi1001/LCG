@@ -152,7 +152,7 @@ export default function App() {
             </div>
 
             <div>
-              <label style={labelStyle}><MapPin size={14} /> Exact Location</label>
+              <label style={labelStyle}><MapPin size={14} /> Search Location</label>
               <input required type="text" value={location} onChange={e => setLocation(e.target.value)} style={inputStyle} />
             </div>
 
@@ -189,7 +189,7 @@ export default function App() {
             </button>
             <button onClick={() => { setActiveTab('history'); loadHistory(); }}
               style={{ display: 'flex', alignItems: 'center', gap: '8px', background: activeTab === 'history' ? '#f8fafc' : 'transparent', color: activeTab === 'history' ? theme.primary : theme.textMuted, border: activeTab === 'history' ? `1px solid ${theme.border}` : '1px solid transparent', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', fontSize: '14px', transition: 'all 0.2s' }}>
-              <Database size={16} /> CRM Database
+              <Database size={16} /> Search History
             </button>
           </div>
 
